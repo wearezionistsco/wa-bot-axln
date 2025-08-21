@@ -4,35 +4,43 @@ const { Client, LocalAuth } = require("whatsapp-web.js");
 
 // ================= CONFIG =================
 const ADMIN = "6287756266682@c.us"; // nomor admin
-const EXCLUDED_NUMBERS = [ADMIN]; // nomor yang tidak diproses menu
-let IZIN_TELEPON = [];
+const EXCLUDED_NUMBERS = [ADMIN];   // nomor yang tidak auto-reject call
 
-// Path untuk penyimpanan di Railway Volume
 const STORAGE_PATH = "./storage";
 const DATA_FILE = path.join(STORAGE_PATH, "data", "sessions.json");
 const LOG_DIR = path.join(STORAGE_PATH, "logs");
 
-// Pastikan folder ada
-if (!fs.existsSync(STORAGE_PATH)) fs.mkdirSync(STORAGE_PATH);
-if (!fs.existsSync(path.dirname(DATA_FILE))) fs.mkdirSync(path.dirname(DATA_FILE), { recursive: true });
-if (!fs.existsSync(LOG_DIR)) fs.mkdirSync(LOG_DIR);
+// pastikan folder ada
+fs.mkdirSync(path.dirname(DATA_FILE), { recursive: true });
+fs.mkdirSync(LOG_DIR, { recursive: true });
 
-// Simpan state user
+// load session user
 let userState = {};
 if (fs.existsSync(DATA_FILE)) {
-  userState = JSON.parse(fs.readFileSync(DATA_FILE, "utf8"));
+  userState = JSON.parse(fs.readFileSync(DATA_FILE));
+}
+
+// simpan ke file
+function saveSessions() {
+  fs.writeFileSync(DATA_FILE, JSON.stringify(userState, null, 2));
+}
+
+// log helper
+function writeLog(message) {
+  const logFile = path.join(LOG_DIR, `${new Date().toISOString().slice(0, 10)}.log`);
+  fs.appendFileSync(logFile, `[${new Date().toISOString()}] ${message}\n`);
 }
 
 // ================= MENU =================
 const menuUtama = `
-📌 *MENU UTAMA*
-1️⃣ Top Up
-2️⃣ Pesan Pribadi
-0️⃣ Kembali ke Menu
+📌 MENU UTAMA
+1️⃣ TOP UP
+2️⃣ PESAN PRIBADI
+0️⃣ MENU
 `;
 
 const menuTopUp = `
-💰 *TOP UP*
+💰 TOP UP
 1. 150
 2. 200
 3. 300
@@ -43,7 +51,7 @@ const menuTopUp = `
 `;
 
 const menuPesanPribadi = `
-✉ *PESAN PRIBADI*
+✉ PESAN PRIBADI
 1. Bon
 2. Gadai
 3. HP
@@ -64,27 +72,16 @@ const client = new Client({
   },
 });
 
-// ================= LOGGING =================
-function logMessage(type, from, body) {
-  const logFile = path.join(LOG_DIR, `${new Date().toISOString().slice(0, 10)}.log`);
-  const line = `[${new Date().toISOString()}] [${type}] ${from}: ${body}\n`;
-  fs.appendFileSync(logFile, line, "utf8");
-}
-
-// Simpan state ke file
-function saveState() {
-  fs.writeFileSync(DATA_FILE, JSON.stringify(userState, null, 2), "utf8");
-}
-
-// ================= EVENT =================
+// QR Code muncul di log Railway (bukan ke admin)
 client.on("qr", (qr) => {
   const qrLink = `https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=${encodeURIComponent(qr)}`;
-  console.log("🔑 Scan QR di link ini:");
-  console.log(qrLink);
+  console.log("🔑 Scan QR lewat link ini (buka di browser):", qrLink);
 });
 
+// Bot siap
 client.on("ready", () => {
   console.log("✅ Bot WhatsApp aktif!");
+  client.sendMessage(ADMIN, "✅ Bot sudah online.");
 });
 
 // ================= HANDLER CHAT =================
@@ -92,113 +89,96 @@ client.on("message", async (msg) => {
   const chat = msg.body.trim();
   const from = msg.from;
 
-  logMessage("INCOMING", from, chat);
+  writeLog(`${from}: ${chat}`);
 
-  // Skip nomor excluded
-  if (EXCLUDED_NUMBERS.includes(from)) return;
-
-  // Auto tampilkan menu saat pesan apapun masuk pertama kali
+  // selalu tampilkan menu jika user baru
   if (!userState[from]) {
     userState[from] = "menu";
-    saveState();
-    return msg.reply(menuUtama);
+    saveSessions();
+    return msg.reply("👋 Selamat datang!\n" + menuUtama);
   }
 
-  // Admin command
-  if (from === ADMIN) {
-    if (chat.toLowerCase() === "close") {
-      userState = {};
-      saveState();
-      return msg.reply("✅ Semua sesi user telah direset.");
-    }
-    if (chat.startsWith("close ")) {
-      const nomor = chat.replace("close ", "").trim() + "@c.us";
+  // admin command close
+  if (from === ADMIN && chat.toLowerCase().startsWith("close")) {
+    const parts = chat.split(" ");
+    if (parts.length === 1) {
+      userState = {}; // reset semua
+      saveSessions();
+      return msg.reply("✅ Semua sesi user ditutup.");
+    } else {
+      const nomor = parts[1] + "@c.us";
       delete userState[nomor];
-      saveState();
-      return msg.reply(`✅ Sesi untuk ${nomor} telah direset.`);
-    }
-    if (chat.startsWith("izin ")) {
-      const nomor = chat.replace("izin ", "").trim() + "@c.us";
-      if (!IZIN_TELEPON.includes(nomor)) IZIN_TELEPON.push(nomor);
-      client.sendMessage(nomor, "✅ Kamu diizinkan telepon admin.");
-      return msg.reply(`Nomor ${nomor} diizinkan telepon.`);
-    }
-    if (chat.startsWith("tolak ")) {
-      const nomor = chat.replace("tolak ", "").trim() + "@c.us";
-      IZIN_TELEPON = IZIN_TELEPON.filter((n) => n !== nomor);
-      client.sendMessage(nomor, "❌ Izin telepon admin dicabut.");
-      return msg.reply(`Nomor ${nomor} ditolak telepon.`);
+      saveSessions();
+      return msg.reply(`✅ Sesi user ${nomor} ditutup.`);
     }
   }
 
-  // Menu utama
+  // --- MENU UTAMA ---
   if (chat === "menu" || chat === "0") {
     userState[from] = "menu";
-    saveState();
+    saveSessions();
     return msg.reply(menuUtama);
   }
 
-  // Pilih menu utama
+  // --- PILIH MENU UTAMA ---
   if (chat === "1" && userState[from] === "menu") {
     userState[from] = "topup";
-    saveState();
+    saveSessions();
     return msg.reply(menuTopUp);
   }
   if (chat === "2" && userState[from] === "menu") {
     userState[from] = "pesan";
-    saveState();
+    saveSessions();
     return msg.reply(menuPesanPribadi);
   }
 
-  // Submenu TopUp
+  // --- SUB MENU TOP UP ---
   if (userState[from] === "topup") {
     if (["1","2","3","4","5","6"].includes(chat)) {
       const nominal = ["150","200","300","500","1/2","1"][parseInt(chat)-1];
       userState[from] = "menu";
-      saveState();
+      saveSessions();
       return msg.reply(`✅ TOP UP ${nominal} diproses. Terima kasih!\n\n${menuUtama}`);
     }
     if (chat === "0") {
       userState[from] = "menu";
-      saveState();
+      saveSessions();
       return msg.reply(menuUtama);
     }
     return msg.reply("❌ Pilihan tidak valid. Silakan pilih sesuai menu.");
   }
 
-  // Submenu Pesan Pribadi
+  // --- SUB MENU PESAN PRIBADI ---
   if (userState[from] === "pesan") {
-    if (chat === "1") msg.reply("📌 Bon dicatat.");
-    else if (chat === "2") msg.reply("📌 Gadai dicatat.");
-    else if (chat === "3") msg.reply("📌 HP dicatat.");
-    else if (chat === "4") msg.reply("📌 Barang lain dicatat.");
-    else if (chat === "5") msg.reply("📞 Permintaan telepon admin dikirim.");
-    else if (chat === "0") {
+    if (chat === "1") return msg.reply("📌 Bon dicatat.\n\n" + menuUtama);
+    if (chat === "2") return msg.reply("📌 Gadai dicatat.\n\n" + menuUtama);
+    if (chat === "3") return msg.reply("📌 HP dicatat.\n\n" + menuUtama);
+    if (chat === "4") return msg.reply("📌 Barang lain dicatat.\n\n" + menuUtama);
+    if (chat === "5") return msg.reply("📞 Permintaan telepon admin dikirim.\n\n" + menuUtama);
+    if (chat === "0") {
       userState[from] = "menu";
-      saveState();
+      saveSessions();
       return msg.reply(menuUtama);
-    } else {
-      return msg.reply("❌ Pilihan tidak valid. Silakan pilih sesuai menu.");
     }
+    return msg.reply("❌ Pilihan tidak valid. Silakan pilih sesuai menu.");
   }
+
+  // default → kirim menu
+  return msg.reply("❌ Pilihan tidak dikenal.\n\n" + menuUtama);
 });
 
 // ================= HANDLER PANGGILAN =================
 client.on("call", async (call) => {
-  logMessage("CALL", call.from, "Incoming Call");
-
-  if (EXCLUDED_NUMBERS.includes(call.from)) return;
-
-  if (!IZIN_TELEPON.includes(call.from)) {
-    await call.reject();
-    client.sendMessage(
-      call.from,
-      "❌ Maaf, panggilan ke admin tidak diizinkan.\nGunakan chat untuk mengakses menu."
-    );
-    console.log("Panggilan ditolak dari:", call.from);
-  } else {
-    console.log("Panggilan diizinkan dari:", call.from);
+  if (EXCLUDED_NUMBERS.includes(call.from)) {
+    console.log("Panggilan dilewati (excluded):", call.from);
+    return;
   }
+  await call.reject();
+  client.sendMessage(
+    call.from,
+    "❌ Maaf, panggilan tidak diizinkan.\nSilakan gunakan menu chat."
+  );
+  writeLog(`Panggilan ditolak dari ${call.from}`);
 });
 
 // Jalankan bot
