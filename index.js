@@ -3,44 +3,28 @@ const path = require("path");
 const { Client, LocalAuth } = require("whatsapp-web.js");
 
 // ================= CONFIG =================
-const ADMIN = "6287756266682@c.us"; // nomor admin
-const EXCLUDED_NUMBERS = [ADMIN];   // nomor yang tidak auto-reject call
+const ADMIN = "6287756266682@c.us"; // ganti dengan nomor adminmu
+const ALLOWED_NUMBERS = [
+  ADMIN,
+  "6285179911407@c.us", // contoh whitelist
+  "6289876543210@c.us"
+];
 
-const STORAGE_PATH = "./storage";
-const DATA_FILE = path.join(STORAGE_PATH, "data", "sessions.json");
-const LOG_DIR = path.join(STORAGE_PATH, "logs");
+const SESSION_PATH = path.join(__dirname, "storage/.wwebjs_auth");
+const LOG_FILE = path.join(__dirname, "storage/bot.log");
 
-// pastikan folder ada
-fs.mkdirSync(path.dirname(DATA_FILE), { recursive: true });
-fs.mkdirSync(LOG_DIR, { recursive: true });
-
-// load session user
-let userState = {};
-if (fs.existsSync(DATA_FILE)) {
-  userState = JSON.parse(fs.readFileSync(DATA_FILE));
-}
-
-// simpan ke file
-function saveSessions() {
-  fs.writeFileSync(DATA_FILE, JSON.stringify(userState, null, 2));
-}
-
-// log helper
-function writeLog(message) {
-  const logFile = path.join(LOG_DIR, `${new Date().toISOString().slice(0, 10)}.log`);
-  fs.appendFileSync(logFile, `[${new Date().toISOString()}] ${message}\n`);
-}
+let userState = {};   // simpan state per user
 
 // ================= MENU =================
 const menuUtama = `
-📌 MENU UTAMA
+📌 *MENU UTAMA*
 1️⃣ TOP UP
 2️⃣ PESAN PRIBADI
 0️⃣ MENU
 `;
 
 const menuTopUp = `
-💰 TOP UP
+💰 *TOP UP*
 1. 150
 2. 200
 3. 300
@@ -51,7 +35,7 @@ const menuTopUp = `
 `;
 
 const menuPesanPribadi = `
-✉ PESAN PRIBADI
+✉ *PESAN PRIBADI*
 1. Bon
 2. Gadai
 3. HP
@@ -60,10 +44,21 @@ const menuPesanPribadi = `
 0. Kembali
 `;
 
+// ================= HELPER =================
+function logMessage(from, message) {
+  const time = new Date().toISOString();
+  const log = `[${time}] ${from}: ${message}\n`;
+  fs.appendFileSync(LOG_FILE, log, "utf8");
+}
+
+function resetSession(from) {
+  delete userState[from];
+}
+
 // ================= CLIENT =================
 const client = new Client({
   authStrategy: new LocalAuth({
-    dataPath: path.join(STORAGE_PATH, ".wwebjs_auth"),
+    dataPath: SESSION_PATH, // simpan session di volume
   }),
   puppeteer: {
     headless: true,
@@ -72,16 +67,16 @@ const client = new Client({
   },
 });
 
-// QR Code muncul di log Railway (bukan ke admin)
+// QR Code hanya muncul di log Railway
 client.on("qr", (qr) => {
   const qrLink = `https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=${encodeURIComponent(qr)}`;
-  console.log("🔑 Scan QR lewat link ini (buka di browser):", qrLink);
+  console.log("🔑 Scan QR lewat link ini:");
+  console.log(qrLink);
 });
 
 // Bot siap
 client.on("ready", () => {
   console.log("✅ Bot WhatsApp aktif!");
-  client.sendMessage(ADMIN, "✅ Bot sudah online.");
 });
 
 // ================= HANDLER CHAT =================
@@ -89,46 +84,40 @@ client.on("message", async (msg) => {
   const chat = msg.body.trim();
   const from = msg.from;
 
-  writeLog(`${from}: ${chat}`);
+  logMessage(from, chat);
 
-  // selalu tampilkan menu jika user baru
-  if (!userState[from]) {
-    userState[from] = "menu";
-    saveSessions();
-    return msg.reply("👋 Selamat datang!\n" + menuUtama);
+  // Command admin
+  if (from === ADMIN) {
+    if (chat === "close") {
+      userState = {};
+      return msg.reply("✅ Semua sesi user berhasil direset.");
+    }
+    if (chat.startsWith("close ")) {
+      const nomor = chat.replace("close ", "").trim() + "@c.us";
+      resetSession(nomor);
+      return msg.reply(`✅ Sesi untuk ${nomor} berhasil direset.`);
+    }
   }
 
-  // admin command close
-  if (from === ADMIN && chat.toLowerCase().startsWith("close")) {
-    const parts = chat.split(" ");
-    if (parts.length === 1) {
-      userState = {}; // reset semua
-      saveSessions();
-      return msg.reply("✅ Semua sesi user ditutup.");
-    } else {
-      const nomor = parts[1] + "@c.us";
-      delete userState[nomor];
-      saveSessions();
-      return msg.reply(`✅ Sesi user ${nomor} ditutup.`);
-    }
+  // Jika user belum punya state → langsung kirim menu
+  if (!userState[from]) {
+    userState[from] = "menu";
+    return msg.reply(menuUtama);
   }
 
   // --- MENU UTAMA ---
   if (chat === "menu" || chat === "0") {
     userState[from] = "menu";
-    saveSessions();
     return msg.reply(menuUtama);
   }
 
   // --- PILIH MENU UTAMA ---
   if (chat === "1" && userState[from] === "menu") {
     userState[from] = "topup";
-    saveSessions();
     return msg.reply(menuTopUp);
   }
   if (chat === "2" && userState[from] === "menu") {
     userState[from] = "pesan";
-    saveSessions();
     return msg.reply(menuPesanPribadi);
   }
 
@@ -136,13 +125,11 @@ client.on("message", async (msg) => {
   if (userState[from] === "topup") {
     if (["1","2","3","4","5","6"].includes(chat)) {
       const nominal = ["150","200","300","500","1/2","1"][parseInt(chat)-1];
-      userState[from] = "menu";
-      saveSessions();
-      return msg.reply(`✅ TOP UP ${nominal} diproses. Terima kasih!\n\n${menuUtama}`);
+      resetSession(from);
+      return msg.reply(`✅ TOP UP *${nominal}* diproses. Terima kasih!\n\n${menuUtama}`);
     }
     if (chat === "0") {
       userState[from] = "menu";
-      saveSessions();
       return msg.reply(menuUtama);
     }
     return msg.reply("❌ Pilihan tidak valid. Silakan pilih sesuai menu.");
@@ -150,35 +137,29 @@ client.on("message", async (msg) => {
 
   // --- SUB MENU PESAN PRIBADI ---
   if (userState[from] === "pesan") {
-    if (chat === "1") return msg.reply("📌 Bon dicatat.\n\n" + menuUtama);
-    if (chat === "2") return msg.reply("📌 Gadai dicatat.\n\n" + menuUtama);
-    if (chat === "3") return msg.reply("📌 HP dicatat.\n\n" + menuUtama);
-    if (chat === "4") return msg.reply("📌 Barang lain dicatat.\n\n" + menuUtama);
-    if (chat === "5") return msg.reply("📞 Permintaan telepon admin dikirim.\n\n" + menuUtama);
-    if (chat === "0") {
-      userState[from] = "menu";
-      saveSessions();
-      return msg.reply(menuUtama);
-    }
+    if (chat === "1") { resetSession(from); return msg.reply("📌 Bon dicatat.\n\n" + menuUtama); }
+    if (chat === "2") { resetSession(from); return msg.reply("📌 Gadai dicatat.\n\n" + menuUtama); }
+    if (chat === "3") { resetSession(from); return msg.reply("📌 HP dicatat.\n\n" + menuUtama); }
+    if (chat === "4") { resetSession(from); return msg.reply("📌 Barang lain dicatat.\n\n" + menuUtama); }
+    if (chat === "5") { resetSession(from); return msg.reply("📞 Permintaan telepon admin dikirim.\n\n" + menuUtama); }
+    if (chat === "0") { userState[from] = "menu"; return msg.reply(menuUtama); }
     return msg.reply("❌ Pilihan tidak valid. Silakan pilih sesuai menu.");
   }
-
-  // default → kirim menu
-  return msg.reply("❌ Pilihan tidak dikenal.\n\n" + menuUtama);
 });
 
 // ================= HANDLER PANGGILAN =================
 client.on("call", async (call) => {
-  if (EXCLUDED_NUMBERS.includes(call.from)) {
-    console.log("Panggilan dilewati (excluded):", call.from);
+  if (ALLOWED_NUMBERS.includes(call.from)) {
+    console.log("📞 Panggilan diizinkan dari:", call.from);
     return;
   }
+
   await call.reject();
   client.sendMessage(
     call.from,
-    "❌ Maaf, panggilan tidak diizinkan.\nSilakan gunakan menu chat."
+    "❌ Maaf, panggilan tidak diizinkan.\nSilakan gunakan chat untuk akses menu."
   );
-  writeLog(`Panggilan ditolak dari ${call.from}`);
+  console.log("🚫 Panggilan ditolak dari:", call.from);
 });
 
 // Jalankan bot
